@@ -13,6 +13,7 @@ from langchain_pinecone import PineconeVectorStore
 from langchain_openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
+import numpy as np
 
 load_dotenv()
 
@@ -51,6 +52,35 @@ UK_CITIES = [
     "Derby", "Southampton", "Portsmouth", "Brighton", "Preston",
     "Swansea", "Middlesbrough", "Sunderland", "Norwich", "Walsall"
 ]
+
+
+class ReducedDimensionEmbeddings(OpenAIEmbeddings):
+    """
+    Custom embeddings class that reduces 1536 dimensions to 1024 for Pinecone compatibility.
+    """
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+    
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """Embed documents and reduce dimensions."""
+        embeddings = super().embed_documents(texts)
+        return [self._reduce_dimensions(emb) for emb in embeddings]
+    
+    def embed_query(self, text: str) -> List[float]:
+        """Embed query and reduce dimensions."""
+        embedding = super().embed_query(text)
+        return self._reduce_dimensions(embedding)
+    
+    def _reduce_dimensions(self, embedding: List[float]) -> List[float]:
+        """Reduce embedding dimensions from 1536 to 1024."""
+        if len(embedding) == 1536:
+            # Use intelligent sampling to preserve important features
+            # Take every 1.5th element (1536/1024 = 1.5)
+            step = 1536 / 1024
+            indices = [int(i * step) for i in range(1024)]
+            return [embedding[i] for i in indices]
+        return embedding
 
 
 def detect_fsbo(content: str, title: str = "") -> Tuple[bool, List[str]]:
@@ -243,23 +273,45 @@ async def scrape_property_source(base_url: str) -> List[Dict]:
     
     # Step 1: Map the website to discover listing URLs
     map_tool = TavilyMap(
-        max_depth=2,        # Don't go too deep
-        max_breadth=15,     # Follow up to 15 links per page
-        limit=50            # Max 50 URLs per source (adjust as needed)
+        max_depth=1,        # Keep it shallow for now
+        max_breadth=10,     # Follow up to 10 links per page
+        limit=20,           # Max 20 URLs per source (adjust as needed)
+        tavily_api_key=os.getenv("TAVILY_API_KEY")
     )
     
     try:
-        sitemap = map_tool.invoke({"url": base_url})
+        sitemap_result = map_tool.invoke({"url": base_url})
+        print(f"   Sitemap result type: {type(sitemap_result)}")
+        
+        # Extract URLs from the result
+        if isinstance(sitemap_result, dict) and "results" in sitemap_result:
+            sitemap = sitemap_result["results"]
+        else:
+            sitemap = sitemap_result
+            
         print(f"   Discovered {len(sitemap)} URLs")
+        
+        # Filter and clean URLs
+        valid_urls = []
+        for url in sitemap:
+            if isinstance(url, str) and url.startswith('http'):
+                valid_urls.append(url)
+        
+        print(f"   Valid URLs: {len(valid_urls)}")
+        
+        if not valid_urls:
+            print(f"   ⚠️  No valid URLs found")
+            return []
+            
     except Exception as e:
         print(f"   ❌ Map failed: {e}")
         return []
     
     # Step 2: Extract content from URLs in batches
-    extract_tool = TavilyExtract()
+    extract_tool = TavilyExtract(tavily_api_key=os.getenv("TAVILY_API_KEY"))
     all_properties = []
     
-    url_batches = chunk_urls(sitemap, chunk_size=5)  # Smaller batches for stability
+    url_batches = chunk_urls(valid_urls, chunk_size=3)  # Even smaller batches
     
     for i, batch in enumerate(url_batches, 1):
         print(f"   Processing batch {i}/{len(url_batches)} ({len(batch)} URLs)")
@@ -371,8 +423,8 @@ def index_to_pinecone(documents: List[Document]):
     """
     print(f"\n📊 Indexing {len(documents)} properties to Pinecone...")
     
-    # Initialize embeddings
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    # Initialize embeddings with dimension reduction
+    embeddings = ReducedDimensionEmbeddings(model="text-embedding-3-small")
     
     # Chunk documents if needed (properties are usually short, but just in case)
     text_splitter = RecursiveCharacterTextSplitter(

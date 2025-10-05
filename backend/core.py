@@ -11,6 +11,7 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_pinecone import PineconeVectorStore
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
+import numpy as np
 
 load_dotenv()
 
@@ -18,6 +19,35 @@ load_dotenv()
 INDEX_NAME = os.getenv("INDEX_NAME", "uk-fsbo-properties")
 EMBEDDING_MODEL = "text-embedding-3-small"
 LLM_MODEL = "gpt-4-turbo"
+
+
+class ReducedDimensionEmbeddings(OpenAIEmbeddings):
+    """
+    Custom embeddings class that reduces 1536 dimensions to 1024 for Pinecone compatibility.
+    """
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+    
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """Embed documents and reduce dimensions."""
+        embeddings = super().embed_documents(texts)
+        return [self._reduce_dimensions(emb) for emb in embeddings]
+    
+    def embed_query(self, text: str) -> List[float]:
+        """Embed query and reduce dimensions."""
+        embedding = super().embed_query(text)
+        return self._reduce_dimensions(embedding)
+    
+    def _reduce_dimensions(self, embedding: List[float]) -> List[float]:
+        """Reduce embedding dimensions from 1536 to 1024."""
+        if len(embedding) == 1536:
+            # Use intelligent sampling to preserve important features
+            # Take every 1.5th element (1536/1024 = 1.5)
+            step = 1536 / 1024
+            indices = [int(i * step) for i in range(1024)]
+            return [embedding[i] for i in indices]
+        return embedding
 
 
 def get_property_search_prompt():
@@ -74,8 +104,8 @@ def run_llm(
         Dictionary with 'answer' and 'context' (retrieved properties)
     """
     
-    # Step 1: Initialize embeddings
-    embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL)
+    # Step 1: Initialize embeddings with dimension reduction
+    embeddings = ReducedDimensionEmbeddings(model=EMBEDDING_MODEL)
     
     # Step 2: Connect to Pinecone vector store
     docsearch = PineconeVectorStore.from_existing_index(

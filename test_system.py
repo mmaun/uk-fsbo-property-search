@@ -134,16 +134,13 @@ def test_pinecone_connection():
     print("🗄️ Testing Pinecone connection...")
     
     try:
-        import pinecone
+        from pinecone import Pinecone
         
-        # Initialize Pinecone
-        pinecone.init(
-            api_key=os.getenv("PINECONE_API_KEY"),
-            environment=os.getenv("PINECONE_ENVIRONMENT")
-        )
+        # Initialize Pinecone (new API)
+        pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
         
         # List indexes
-        indexes = pinecone.list_indexes()
+        indexes = pc.list_indexes()
         print(f"✅ Pinecone connected. Available indexes: {[idx.name for idx in indexes]}")
         
         return True
@@ -157,13 +154,17 @@ def test_openai_connection():
     print("🧠 Testing OpenAI connection...")
     
     try:
-        from langchain_openai import OpenAIEmbeddings
+        from backend.core import ReducedDimensionEmbeddings
         
-        # Test embeddings
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        # Test embeddings with dimension reduction
+        embeddings = ReducedDimensionEmbeddings(model="text-embedding-3-small")
         test_embedding = embeddings.embed_query("test query")
         
         print(f"✅ OpenAI embeddings working (dimension: {len(test_embedding)})")
+        if len(test_embedding) == 1024:
+            print("✅ Embedding dimension matches Pinecone index (1024)")
+        else:
+            print(f"⚠️  Embedding dimension {len(test_embedding)} doesn't match Pinecone index (1024)")
         return True
         
     except Exception as e:
